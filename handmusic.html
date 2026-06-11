@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>パーム・デュアル・オーケストラ（バグ完全修正版）</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body { background-color: #040609; color: #fff; font-family: system-ui, sans-serif; text-align: center; padding: 20px; margin: 0; user-select: none; }
+        h1 { color: #00ffcc; font-size: 24px; margin-bottom: 5px; text-shadow: 0 0 10px rgba(0,255,204,0.3); }
+        .info { color: #a4a7ab; font-size: 13px; margin-bottom: 20px; }
+        
+        .setup-panel { background: #0b101d; padding: 20px; border-radius: 16px; border: 1px solid #00ffcc; display: inline-block; margin-bottom: 20px; text-align: left; }
+        .setup-panel input[type="text"] { background: #040609; border: 1px solid #252f44; color: #fff; padding: 8px; border-radius: 6px; width: 150px; margin-right: 10px; }
+        
+        .btn { background: #00ffcc; color: #040609; padding: 10px 15px; border-radius: 8px; cursor: pointer; font-weight: bold; border: none; transition: 0.2s; margin-right: 8px; display: inline-block; }
+        .btn:hover { background: #00ccaa; }
+        .btn-melody { background: #00ffcc; color: #040609; }
+        .btn-harmony { background: #00bfff; color: #040609; }
+        .btn-harmony:hover { background: #0099cc; }
+        .btn-play { background: #ffaa00; color: #040609; }
+        .btn-play:hover { background: #d48d00; }
+        
+        .section-title { font-size: 14px; color: #00ffcc; text-align: left; width: 90%; max-width: 1000px; margin: 15px auto 5px auto; font-weight: bold; }
+        .stage-container {
+            display: flex; gap: 15px; padding: 15px; margin: 0 auto 20px auto; 
+            width: 90%; max-width: 1000px; min-height: 240px;
+            background: #070a10; border-radius: 20px; border: 2px solid #252f44;
+            overflow-x: auto; overflow-y: hidden; position: relative; align-items: center;
+        }
+
+        #seek-bar {
+            position: absolute; top: 0; left: 0; width: 4px; height: 100%;
+            background: #ff0055; box-shadow: 0 0 12px #ff0055;
+            display: none; pointer-events: none; z-index: 10;
+        }
+
+        .hand-card {
+            flex: 0 0 170px; height: 230px; background: #101622; 
+            border-radius: 12px; border: 2px solid #252f44; 
+            position: relative; overflow: hidden; transition: 0.3s;
+            display: flex; flex-direction: column; align-items: center; padding: 8px;
+        }
+        .hand-card.active { border-color: #00ffcc; box-shadow: 0 0 15px rgba(0,255,204,0.4); transform: scale(1.03); }
+        .hand-card canvas { width: 110px; height: 110px; border-radius: 8px; background: #000; margin-top: 5px; }
+        .hand-name { font-weight: bold; margin-top: 5px; color: #00ffcc; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; width: 100%; }
+        .hand-meta { font-size: 9px; color: #ffaa00; margin-top: 2px; text-align: left; width: 100%; line-height: 1.2; }
+        .badge { position: absolute; top: 5px; right: 5px; font-size: 9px; padding: 2px 5px; border-radius: 4px; font-weight: bold; }
+        .badge-m { background: #00ffcc; color: #000; }
+        .badge-h { background: #00bfff; color: #000; }
+
+        #status { color: #ffb326; font-weight: bold; font-family: monospace; background: #0b101d; padding: 15px; border-radius: 8px; display: inline-block; min-width: 650px; border: 1px solid #252f44; text-align: left; line-height: 1.6; }
+    </style>
+</head>
+<body>
+
+    <h1>🤝 パーム・デュアル・オーケストラ</h1>
+    <p class="info">アップロードエラーを完全修正。伴奏も手の特徴に合わせて和音の音色が劇的に変化します。</p>
+
+    <div class="setup-panel">
+        <input type="text" id="handName" placeholder="持ち主の名前" value="ゲスト">
+        
+        <label class="btn btn-melody" for="imageLoaderMelody">📷 メロディーに追加</label>
+        <input type="file" id="imageLoaderMelody" accept="image/*" style="display:none;">
+
+        <label class="btn btn-harmony" for="imageLoaderHarmony">📷 伴奏パートに追加</label>
+        <input type="file" id="imageLoaderHarmony" accept="image/*" style="display:none;">
+        
+        <button class="btn btn-play" id="startPlayback" disabled>▶ 演奏スタート</button>
+        <button class="btn" style="background:#ff4444; color:#fff;" id="clearHands">❌ リセット</button>
+    </div>
+
+    <div class="section-title">🎵 メロディー（主旋律）パートのメンバー</div>
+    <div id="melody-stage" class="stage-container">
+        <div id="seek-bar"></div>
+    </div>
+
+    <div class="section-title">🎹 伴奏（コード）パートのメンバー</div>
+    <div id="harmony-stage" class="stage-container"></div>
+
+    <div>
+        <div id="status">【準備】元の16音色システムが起動しています。手をスキャンしてください。</div>
+    </div>
+
+    <script>
+        // ==========================================
+        // 1. 回路システム
+        // ==========================================
+        const mainOutput = new Tone.Reverb({ roomSize: 0.85, wet: 0.25 }).toDestination();
+        
+        const feedbackDelay = new Tone.FeedbackDelay("8n.", 0.12).connect(mainOutput);
+        feedbackDelay.wet.value = 0.06; 
+
+        const mainFilter = new Tone.Filter({ frequency: 5000, type: "lowpass" }).connect(feedbackDelay);
+
+        // メロディー用
+        const synthVolume = new Tone.Volume(0).connect(mainFilter);
+        const synth = new Tone.PolySynth(Tone.FMSynth).connect(synthVolume);
+
+        // 1オクターブ下低音用
+        const subBassVolume = new Tone.Volume(-Infinity).connect(mainFilter);
+        const subBassSynth = new Tone.PolySynth(Tone.Synth, {
+            oscillator: { type: "triangle" },
+            envelope: { attack: 0.05, decay: 0.3, sustain: 0, release: 0.2 }
+        }).connect(subBassVolume);
+
+        // 伴奏用回路
+        const harmonyVolume = new Tone.Volume(-15).connect(mainFilter); 
+        const harmonySynth = new Tone.PolySynth(Tone.FMSynth, { maxPolyphony: 12 }).connect(harmonyVolume);
+
+        // 16楽器モーフィングデータ定義
+        const INSTRUMENTS = [
+            "コンガ", "カリンバ", "マリンバ", "木琴",
+            "水滴", "波紋", "ガラス音", "風鈴",
+            "チャイム", "ベル", "ハンドベル", "鈴",
+            "オルゴール", "チェレスタ", "グロッケン", "鉄琴"
+        ];
+
+        const instConfigs = {
+            "コンガ": { harmonicity: 0.4, modIndex: 0.5, attack: 0.002, decay: 0.08, volCorrect: +4 },
+            "カリンバ": { harmonicity: 2.5, modIndex: 1.0, attack: 0.002, decay: 0.3, volCorrect: +1 },
+            "マリンバ": { harmonicity: 1.0, modIndex: 3.0, attack: 0.001, decay: 0.2, volCorrect: +1 },
+            "木琴": { harmonicity: 1.0, modIndex: 0.2, attack: 0.001, decay: 0.06, volCorrect: +2 },
+            "水滴": { harmonicity: 0.1, modIndex: 15, attack: 0.001, decay: 0.03, volCorrect: +5 },
+            "波紋": { harmonicity: 0.5, modIndex: 2.0, attack: 0.12, decay: 0.5, volCorrect: 0 },
+            "ガラス音": { harmonicity: 5.8, modIndex: 45, attack: 0.001, decay: 0.12, volCorrect: -4 },
+            "風鈴": { harmonicity: 8.2, modIndex: 35, attack: 0.001, decay: 0.9, volCorrect: -6 },
+            "チャイム": { harmonicity: 4.5, modIndex: 25, attack: 0.02, decay: 1.4, volCorrect: -2 },
+            "ベル": { harmonicity: 1.6, modIndex: 20, attack: 0.005, decay: 1.0, volCorrect: 0 },
+            "ハンドベル": { harmonicity: 2.1, modIndex: 12, attack: 0.01, decay: 0.7, volCorrect: -2 },
+            "鈴": { harmonicity: 11.2, modIndex: 55, attack: 0.001, decay: 0.08, volCorrect: -8 },
+            "オルゴール": { harmonicity: 0.5, modIndex: 0.1, attack: 0.008, decay: 0.5, volCorrect: 0 },
+            "チェレスタ": { harmonicity: 3.5, modIndex: 8, attack: 0.012, decay: 0.5, volCorrect: -2 },
+            "グロッケン": { harmonicity: 6.5, modIndex: 18, attack: 0.001, decay: 0.6, volCorrect: -6 },
+            "鉄琴": { harmonicity: 1.0, modIndex: 0.5, attack: 0.001, decay: 0.45, volCorrect: -2 }
+        };
+
+        const TWINKLE_MELODY = [
+            "C4", "C4", "G4", "G4", "A4", "A4", "G4", "REST",
+            "F4", "F4", "E4", "E4", "D4", "D4", "C4", "REST",
+            "G4", "G4", "F4", "F4", "E4", "E4", "D4", "REST",
+            "G4", "G4", "F4", "F4", "E4", "E4", "D4", "REST",
+            "C4", "C4", "G4", "G4", "A4", "A4", "G4", "REST",
+            "F4", "F4", "E4", "E4", "D4", "D4", "C4"
+        ];
+        
+        const C_MAJOR = ["C4", "E4", "G4"];
+        const F_MAJOR = ["C4", "F4", "A4"];
+        const G_MAJOR = ["B3", "D4", "G4"];
+
+        const HARMONY_CHORDS = [
+            C_MAJOR, C_MAJOR, C_MAJOR, C_MAJOR, F_MAJOR, F_MAJOR, C_MAJOR, null,
+            F_MAJOR, F_MAJOR, C_MAJOR, C_MAJOR, G_MAJOR, G_MAJOR, C_MAJOR, null,
+            C_MAJOR, C_MAJOR, F_MAJOR, F_MAJOR, C_MAJOR, C_MAJOR, G_MAJOR, null,
+            C_MAJOR, C_MAJOR, F_MAJOR, F_MAJOR, C_MAJOR, C_MAJOR, G_MAJOR, null,
+            C_MAJOR, C_MAJOR, C_MAJOR, C_MAJOR, F_MAJOR, F_MAJOR, C_MAJOR, null,
+            F_MAJOR, F_MAJOR, C_MAJOR, C_MAJOR, G_MAJOR, G_MAJOR, C_MAJOR
+        ];
+
+        let melodyHands = [];
+        let harmonyHands = [];
+        let handCounter = 0;
+
+        // ==========================================
+        // 2. 画像解析システム（安全に動作するように確認済）
+        // ==========================================
+        document.getElementById('imageLoaderMelody').addEventListener('change', (e) => handleImageUpload(e, 'melody'));
+        document.getElementById('imageLoaderHarmony').addEventListener('change', (e) => handleImageUpload(e, 'harmony'));
+
+        function handleImageUpload(e, type) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const img = new Image();
+                img.onload = function() { analyzeAndRegisterHand(img, type); }
+                img.src = event.target.result;
+            }
+            reader.readAsDataURL(file);
+        }
+
+        function analyzeAndRegisterHand(img, type) {
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = 150; tempCanvas.height = 150;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.drawImage(img, 0, 0, img.width, img.height, 0, 0, 150, 150);
+            const imgPixels = tempCtx.getImageData(0, 0, 150, 150);
+
+            const startScan = 45; const endScan = 105;
+            let brightnessArray = []; let rRatioSum = 0; let allLocalDiffs = []; let totalPixels = 0;
+
+            for (let y = startScan; y < endScan; y++) {
+                for (let x = startScan; x < endScan; x++) {
+                    const idx = (y * 150 + x) * 4;
+                    const r = imgPixels.data[idx]; const g = imgPixels.data[idx+1]; const b = imgPixels.data[idx+2];
+                    const brightness = (r + g + b) / 3;
+                    brightnessArray.push(brightness);
+                    rRatioSum += (r / (r + g + b + 1));
+
+                    if (x > startScan) {
+                        const prevIdx = (y * 150 + (x - 1)) * 4;
+                        const prevB = (imgPixels.data[prevIdx] + imgPixels.data[prevIdx+1] + imgPixels.data[prevIdx+2]) / 3;
+                        allLocalDiffs.push(Math.abs(brightness - prevB));
+                    }
+                    totalPixels++;
+                }
+            }
+
+            allLocalDiffs.sort((a, b) => b - a);
+            const top5PercentCount = Math.max(1, Math.floor(allLocalDiffs.length * 0.05));
+            let topDiffSum = 0;
+            for (let i = 0; i < top5PercentCount; i++) topDiffSum += allLocalDiffs[i];
+            const robustMaxDiff = topDiffSum / top5PercentCount;
+
+            const avgBrightness = brightnessArray.reduce((sum, val) => sum + val, 0) / totalPixels;
+            let axisWhiteness = Math.max(0, Math.min((avgBrightness - 50) / 160, 1));
+            const avgRedRatio = rRatioSum / totalPixels;
+            let axisRedness = Math.max(0, Math.min((avgRedRatio - 0.34) / 0.12, 1));
+            const variance = brightnessArray.reduce((sum, val) => sum + Math.pow(val - avgBrightness, 2), 0) / totalPixels;
+            let axisDensity = Math.max(0, Math.min((Math.sqrt(variance) - 10) / 40, 1));
+            let axisDepth = Math.max(0, Math.min((robustMaxDiff - 6) / 38, 1));
+
+            const enhancedWeights = {}; let weightSum = 0;
+            for (let i = 0; i < 16; i++) {
+                const needDepth     = (i < 8)   ? axisDepth     : (1 - axisDepth);
+                const needDensity   = ((i % 8) < 4) ? axisDensity : (1 - axisDensity);
+                const needWhiteness = ((i % 4) >= 2) ? axisWhiteness : (1 - axisWhiteness);
+                const needRedness   = (i % 2 === 1) ? axisRedness : (1 - axisRedness);
+
+                const rawW = needDepth * needDensity * needWhiteness * needRedness;
+                const enhancedW = Math.pow(rawW, 3);
+                enhancedWeights[INSTRUMENTS[i]] = enhancedW; weightSum += enhancedW;
+            }
+            INSTRUMENTS.forEach(name => { enhancedWeights[name] = weightSum > 0 ? (enhancedWeights[name] / weightSum) : 0; });
+
+            tempCtx.strokeStyle = type === 'melody' ? "#00ffcc" : "#00bfff";
+            tempCtx.strokeRect(startScan, startScan, endScan - startScan, endScan - startScan);
+
+            const handParam = {
+                name: document.getElementById('handName').value || `ゲスト`,
+                whiteness: axisWhiteness, redness: axisRedness, density: axisDensity, depth: axisDepth,
+                weights: enhancedWeights, canvas: tempCanvas, type: type
+            };
+
+            if (type === 'melody') {
+                melodyHands.push(handParam);
+            } else {
+                harmonyHands.push(handParam);
+            }
+
+            updateStageDOM();
+            const sortedInsts = [...INSTRUMENTS].sort((a,b) => enhancedWeights[b] - enhancedWeights[a]);
+
+            document.getElementById("status").innerHTML = 
+                `✨ <b>[${handParam.name} さんを【${type === 'melody' ? 'メロディー' : '伴奏'}】パートに登録]</b><br>` +
+                `➔ メイン音色: <b>${sortedInsts[0]}</b>`;
+            
+            if(melodyHands.length > 0) document.getElementById("startPlayback").disabled = false;
+            document.getElementById('handName').value = "ゲスト";
+        }
+
+        function updateStageDOM() {
+            const mStage = document.getElementById('melody-stage');
+            const seekBar = document.getElementById('seek-bar');
+            mStage.innerHTML = ''; mStage.appendChild(seekBar);
+            melodyHands.forEach((hand, idx) => mStage.appendChild(createCardHTML(hand, idx, 'M')));
+
+            const hStage = document.getElementById('harmony-stage');
+            hStage.innerHTML = '';
+            harmonyHands.forEach((hand, idx) => hStage.appendChild(createCardHTML(hand, idx, 'H')));
+        }
+
+        function createCardHTML(hand, index, label) {
+            const card = document.createElement('div');
+            card.className = 'hand-card'; card.id = `hand-card-${label}-${index}`;
+            
+            const badge = document.createElement('span');
+            badge.className = `badge badge-${label.toLowerCase()}`;
+            badge.innerText = label === 'M' ? 'メロディー' : '伴奏';
+
+            const nameEl = document.createElement('div');
+            nameEl.className = 'hand-name'; nameEl.innerText = hand.name;
+
+            const sorted = [...INSTRUMENTS].sort((a,b) => hand.weights[b] - hand.weights[a]);
+            const metaEl = document.createElement('div');
+            metaEl.className = 'hand-meta';
+            metaEl.innerHTML = 
+                `🎵主音色: ${sorted[0]}<br>` +
+                `🕳深さ: ${Math.round(hand.depth*100)}%<br>` +
+                `🌾密度: ${Math.round(hand.density*100)}%<br>` +
+                `🔴赤み: ${Math.round(hand.redness*100)}%`;
+
+            card.appendChild(badge); card.appendChild(hand.canvas); card.appendChild(nameEl); card.appendChild(metaEl);
+            return card;
+        }
+
+        // ==========================================
+        // 3. 演奏システム（安全なパラメータ一括流し込みに修正）
+        // ==========================================
+        let playbackTimer = null;
+
+        document.getElementById('startPlayback').addEventListener('click', () => {
+            if (melodyHands.length === 0) return;
+            if (Tone.context.state !== 'running') Tone.start();
+
+            const seekBar = document.getElementById('seek-bar');
+            const mStage = document.getElementById('melody-stage');
+            seekBar.style.display = 'block';
+
+            let currentNoteIndex = 0;
+            handCounter = 0;
+            const tempoMs = 520;
+
+            if (playbackTimer) clearInterval(playbackTimer);
+
+            playbackTimer = setInterval(() => {
+                if (currentNoteIndex >= TWINKLE_MELODY.length) {
+                    clearInterval(playbackTimer); seekBar.style.display = 'none';
+                    document.getElementById("status").innerText = "演奏が終了しました！";
+                    document.querySelectorAll('.hand-card').forEach(c => c.classList.remove('active'));
+                    return;
+                }
+
+                const currentNote = TWINKLE_MELODY[currentNoteIndex];
+                if (currentNote === "REST") { currentNoteIndex++; return; }
+
+                // --- ① メロディー演奏処理 ---
+                const mHandIndex = handCounter % melodyHands.length;
+                const currentMelodyHand = melodyHands[mHandIndex];
+
+                document.querySelectorAll('.hand-card').forEach(c => c.classList.remove('active'));
+                const cardEl = document.getElementById(`hand-card-M-${mHandIndex}`);
+                if (cardEl) {
+                    cardEl.classList.add('active');
+                    seekBar.style.left = `${cardEl.offsetLeft}px`;
+                    mStage.scrollTo({ left: cardEl.offsetLeft - mStage.offsetWidth / 2 + 85, behavior: 'smooth' });
+                }
+
+                let mixedHarmonicity = 0; let mixedModIndex = 0;
+                let mixedAttack = 0; let mixedDecay = 0; let mixedVolCorrect = 0;
+
+                INSTRUMENTS.forEach(name => {
+                    const w = currentMelodyHand.weights[name];
+                    const conf = instConfigs[name];
+                    mixedHarmonicity += conf.harmonicity * w;
+                    mixedModIndex += conf.modIndex * w;
+                    mixedAttack += conf.attack * w;
+                    mixedDecay += conf.decay * w;
+                    mixedVolCorrect += conf.volCorrect * w;
+                });
+
+                // ★安全な設定方法：optionsのメタパラメータとして設定することで、未生成ボイスにも適用させる
+                synth.set({
+                    harmonicity: mixedHarmonicity,
+                    modulationIndex: mixedModIndex,
+                    envelope: { attack: mixedAttack, decay: mixedDecay, sustain: 0, release: mixedDecay }
+                });
+                
+                synthVolume.volume.setValueAtTime(mixedVolCorrect, Tone.now());
+                
+                const extremeCutoff = 1200 + (Math.pow(currentMelodyHand.whiteness, 2) * 4300);
+                mainFilter.frequency.setValueAtTime(extremeCutoff, Tone.now());
+
+                synth.triggerAttackRelease(currentNote, "4n", Tone.now());
+
+                if (currentMelodyHand.depth >= 0.5) {
+                    const subGainDb = Tone.gainToDb(currentMelodyHand.depth) - 10; 
+                    subBassVolume.volume.setValueAtTime(subGainDb, Tone.now());
+                    const noteName = currentNote.substring(0, 1);
+                    const octave = parseInt(currentNote.substring(1)) - 1;
+                    subBassSynth.triggerAttackRelease(`${noteName}${octave}`, "4n", Tone.now());
+                } else {
+                    subBassVolume.volume.setValueAtTime(-Infinity, Tone.now());
+                }
+
+                // --- ② 伴奏演奏処理 ---
+                let currentHarmonyHandName = "未登録";
+                let hSortedName = "-";
+
+                if (harmonyHands.length > 0) {
+                    const currentChord = HARMONY_CHORDS[currentNoteIndex];
+                    
+                    if (currentChord) {
+                        const hHandIndex = Math.floor(currentNoteIndex / 4) % harmonyHands.length;
+                        const currentHarmonyHand = harmonyHands[hHandIndex];
+                        currentHarmonyHandName = currentHarmonyHand.name;
+
+                        const hCardEl = document.getElementById(`hand-card-H-${hHandIndex}`);
+                        if (hCardEl) hCardEl.classList.add('active');
+
+                        let hHarmonicity = 0; let hModIndex = 0; let hAttack = 0; let hDecay = 0; let hVolCorrect = 0;
+                        INSTRUMENTS.forEach(name => {
+                            const w = currentHarmonyHand.weights[name];
+                            const conf = instConfigs[name];
+                            hHarmonicity += conf.harmonicity * w;
+                            hModIndex += conf.modIndex * w;
+                            hAttack += conf.attack * w;
+                            hDecay += conf.decay * w;
+                            hVolCorrect += conf.volCorrect * w;
+                        });
+
+                        // ★安全な設定方法：こちらもoptionsのメタパラメータとして和音シンセ全体へ設定
+                        harmonySynth.set({
+                            harmonicity: hHarmonicity,
+                            modulationIndex: hModIndex,
+                            envelope: { attack: hAttack, decay: hDecay, sustain: 0, release: hDecay }
+                        });
+
+                        harmonyVolume.volume.setValueAtTime(-14 + hVolCorrect, Tone.now());
+
+                        const hSorted = [...INSTRUMENTS].sort((a,b) => currentHarmonyHand.weights[b] - currentHarmonyHand.weights[a]);
+                        hSortedName = hSorted[0];
+
+                        if (currentNoteIndex % 2 === 0) {
+                            harmonySynth.triggerAttackRelease(currentChord, "2n", Tone.now());
+                        }
+                    }
+                }
+
+                const mSorted = [...INSTRUMENTS].sort((a,b) => currentMelodyHand.weights[b] - currentMelodyHand.weights[a]);
+                document.getElementById("status").innerHTML = 
+                    `🎶 <b>メロディー: ${currentMelodyHand.name} さん (音色: ${mSorted[0]})</b><br>` +
+                    `🎹 伴奏コード: ${harmonyHands.length > 0 ? `連動中 (${currentHarmonyHandName} さん / 音色: ${hSortedName}の和音)` : '未登録（単奏中）'}`;
+
+                currentNoteIndex++;
+                handCounter++;
+            }, tempoMs);
+        });
+
+        document.getElementById('clearHands').addEventListener('click', () => {
+            if (playbackTimer) clearInterval(playbackTimer);
+            melodyHands = []; harmonyHands = []; updateStageDOM();
+            document.getElementById('seek-bar').style.display = 'none';
+            document.getElementById('startPlayback').disabled = true;
+            document.getElementById("status").innerText = "リセットされました。";
+        });
+    </script>
+</body>
+</html>
